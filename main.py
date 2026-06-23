@@ -1,8 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
-import os, uuid, subprocess, textwrap, requests
+import os, uuid, subprocess, requests
 from gtts import gTTS
 from PIL import Image
 import httpx
@@ -19,6 +19,8 @@ app.add_middleware(
 OUTPUT_DIR = "/tmp/videopro"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+
 PLATFORM_SIZES = {
     "youtube":   (1920, 1080),
     "tiktok":    (1080, 1920),
@@ -27,19 +29,93 @@ PLATFORM_SIZES = {
 }
 
 class VideoRequest(BaseModel):
-    platform: str          # youtube | tiktok | reels | instapost
-    karakter_isim: str
-    karakter_unvan: str
-    gorsel_prompt: str     # İngilizce görsel prompt
-    senaryo: str           # Konuşma metni
-    sahne_aciklamasi: str
-    dil: str = "tr"        # tr | en
-    sure: int = 60         # saniye
+    platform: str
+    karakter_isim: str = ""
+    karakter_unvan: str = ""
+    gorsel_prompt: str = ""
+    senaryo: str = ""
+    sahne_aciklamasi: str = ""
+    dil: str = "tr"
+    sure: int = 60
+
+class AIRequest(BaseModel):
+    platform: str
+    char_prompt: str
+    content_prompt: str
+    tone: str = "Profesyonel"
+    dil: str = "tr"
+    sure: int = 60
 
 
 @app.get("/")
 def root():
     return {"status": "VideoPro Backend çalışıyor ✓"}
+
+
+@app.get("/uygulama")
+async def uygulama():
+    html_path = os.path.join(os.path.dirname(__file__), "videopro-creator.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read())
+
+
+@app.post("/ai-uret")
+async def ai_uret(req: AIRequest):
+    """Groq ile karakter ve senaryo üret"""
+    platform_names = {
+        "youtube": "YouTube (yatay 16:9)",
+        "tiktok": "TikTok (dikey 9:16, kısa)",
+        "reels": "Instagram Reels (dikey 9:16)",
+        "instapost": "Instagram Post (kare 1:1)"
+    }
+    lang_name = "Türkçe" if req.dil == "tr" else "İngilizce"
+    dur_label = f"{req.sure} saniye" if req.sure < 60 else f"{req.sure // 60} dakika"
+
+    prompt = f"""Platform: {platform_names.get(req.platform, req.platform)}
+Dil: {lang_name}
+Süre: {dur_label}
+Ton: {req.tone}
+
+KARAKTER PROMPT: {req.char_prompt}
+İÇERİK: {req.content_prompt}
+
+Şu JSON formatında yanıt ver, başka hiçbir şey yazma:
+{{
+  "karakter": {{
+    "isim": "...",
+    "unvan": "...",
+    "biyografi": "...(2 cümle)...",
+    "gorsel_prompt_en": "professional portrait photo of [description], studio lighting, clean background"
+  }},
+  "senaryo": "...({lang_name} dilinde, {dur_label} sürelik konuşma metni)...",
+  "sahne_aciklamasi": "...(arka plan, ortam açıklaması)..."
+}}"""
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.7,
+                "max_tokens": 1000
+            }
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Groq hatası: {resp.text}")
+
+    data = resp.json()
+    raw = data["choices"][0]["message"]["content"]
+
+    import json, re
+    clean = re.sub(r'```json|```', '', raw).strip()
+    parsed = json.loads(clean)
+    return parsed
 
 
 @app.post("/video-olustur")
@@ -49,29 +125,29 @@ async def video_olustur(req: VideoRequest):
     os.makedirs(job_dir, exist_ok=True)
 
     try:
-        # 1. GÖRSEL İNDİR (Pollinations.ai)
         w, h = PLATFORM_SIZES.get(req.platform, (1920, 1080))
+
+        # 1. GÖRSEL İNDİR
         img_prompt = req.gorsel_prompt + ", " + req.sahne_aciklamasi
         img_url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(img_prompt)}?width={min(w,1024)}&height={min(h,1024)}&nologo=true"
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=40) as client:
             img_resp = await client.get(img_url)
 
         img_path = f"{job_dir}/bg.jpg"
         with open(img_path, "wb") as f:
             f.write(img_resp.content)
 
-        # Boyutu platforma göre ayarla
         img = Image.open(img_path).resize((w, h), Image.LANCZOS)
         img.save(img_path, "JPEG", quality=90)
 
-        # 2. SESLENDİRME (gTTS)
+        # 2. SESLENDİRME
         lang_code = "tr" if req.dil == "tr" else "en"
         tts = gTTS(text=req.senaryo, lang=lang_code, slow=False)
         audio_path = f"{job_dir}/ses.mp3"
         tts.save(audio_path)
 
-        # Ses süresini al
+        # Ses süresi
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
@@ -79,32 +155,27 @@ async def video_olustur(req: VideoRequest):
         )
         audio_duration = float(probe.stdout.strip() or req.sure)
 
-        # 3. ALTYAZI DOSYASI (.srt)
+        # 3. ALTYAZI
         srt_path = f"{job_dir}/altyazi.srt"
         _create_srt(req.senaryo, audio_duration, srt_path)
 
-        # 4. FFmpeg ile MP4 OLUŞTUR
+        # 4. FFmpeg MP4
         output_path = f"{job_dir}/video.mp4"
         ffmpeg_cmd = [
             "ffmpeg", "-y",
-            "-loop", "1",
-            "-i", img_path,
+            "-loop", "1", "-i", img_path,
             "-i", audio_path,
             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
                    f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
                    f"subtitles={srt_path}:force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2,Alignment=2'",
-            "-c:v", "libx264",
-            "-tune", "stillimage",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-pix_fmt", "yuv420p",
-            "-shortest",
+            "-c:v", "libx264", "-tune", "stillimage",
+            "-c:a", "aac", "-b:a", "192k",
+            "-pix_fmt", "yuv420p", "-shortest",
             "-t", str(audio_duration + 1),
             output_path
         ]
 
         result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=120)
-
         if result.returncode != 0:
             raise Exception(f"FFmpeg hatası: {result.stderr[-500:]}")
 
@@ -126,33 +197,19 @@ def indir(job_id: str):
     video_path = f"{OUTPUT_DIR}/{job_id}/video.mp4"
     if not os.path.exists(video_path):
         raise HTTPException(status_code=404, detail="Video bulunamadı")
-    return FileResponse(
-        video_path,
-        media_type="video/mp4",
-        filename="videopro_output.mp4"
-    )
-
-
-@app.get("/durum/{job_id}")
-def durum(job_id: str):
-    video_path = f"{OUTPUT_DIR}/{job_id}/video.mp4"
-    return {"hazir": os.path.exists(video_path)}
+    return FileResponse(video_path, media_type="video/mp4", filename="videopro_output.mp4")
 
 
 def _create_srt(text: str, duration: float, path: str):
-    """Metni eşit parçalara bölerek SRT altyazı dosyası oluşturur."""
     words = text.split()
     chunk_size = max(6, len(words) // max(1, int(duration / 4)))
     chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
     time_per_chunk = duration / max(len(chunks), 1)
-
     with open(path, "w", encoding="utf-8") as f:
         for i, chunk in enumerate(chunks):
             start = i * time_per_chunk
             end = min((i + 1) * time_per_chunk, duration)
-            f.write(f"{i+1}\n")
-            f.write(f"{_fmt_time(start)} --> {_fmt_time(end)}\n")
-            f.write(f"{chunk}\n\n")
+            f.write(f"{i+1}\n{_fmt_time(start)} --> {_fmt_time(end)}\n{chunk}\n\n")
 
 
 def _fmt_time(seconds: float) -> str:
@@ -161,12 +218,3 @@ def _fmt_time(seconds: float) -> str:
     s = int(seconds % 60)
     ms = int((seconds % 1) * 1000)
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
-import os
-
-@app.get("/uygulama")
-async def uygulama():
-    html_path = os.path.join(os.path.dirname(__file__), "videopro-creator.html")
-    with open(html_path, "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read())
