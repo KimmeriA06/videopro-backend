@@ -9,7 +9,6 @@ import httpx
 import imageio_ffmpeg
 
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-FFPROBE_PATH = os.path.join(os.path.dirname(FFMPEG_PATH), "ffprobe")
 
 app = FastAPI(title="VideoPro Backend")
 
@@ -148,13 +147,18 @@ async def video_olustur(req: VideoRequest):
         audio_path = f"{job_dir}/ses.mp3"
         tts.save(audio_path)
 
-        # Ses süresi
+        # Ses süresi (ffmpeg ile)
         probe = subprocess.run(
-            [FFPROBE_PATH, "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+            [FFMPEG_PATH, "-i", audio_path, "-f", "null", "-"],
             capture_output=True, text=True
         )
-        audio_duration = float(probe.stdout.strip() or req.sure)
+        import re as _re
+        dur_match = _re.search(r"Duration: (\d+):(\d+):([\d.]+)", probe.stderr)
+        if dur_match:
+            h2, m2, s2 = dur_match.groups()
+            audio_duration = int(h2)*3600 + int(m2)*60 + float(s2)
+        else:
+            audio_duration = float(req.sure)
 
         # 3. ALTYAZI
         srt_path = f"{job_dir}/altyazi.srt"
