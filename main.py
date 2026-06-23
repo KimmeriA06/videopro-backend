@@ -25,10 +25,10 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 PLATFORM_SIZES = {
-    "youtube":   (1920, 1080),
-    "tiktok":    (1080, 1920),
-    "reels":     (1080, 1920),
-    "instapost": (1080, 1080),
+    "youtube":   (854, 480),
+    "tiktok":    (480, 854),
+    "reels":     (480, 854),
+    "instapost": (480, 480),
 }
 
 class VideoRequest(BaseModel):
@@ -129,7 +129,7 @@ async def video_olustur(req: VideoRequest):
 
         # 1. GÖRSEL İNDİR
         img_prompt = req.gorsel_prompt + ", " + req.sahne_aciklamasi
-        img_url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(img_prompt)}?width={min(w,1024)}&height={min(h,1024)}&nologo=true"
+        img_url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(img_prompt)}?width={w}&height={h}&nologo=true"
 
         async with httpx.AsyncClient(timeout=40) as client:
             img_resp = await client.get(img_url)
