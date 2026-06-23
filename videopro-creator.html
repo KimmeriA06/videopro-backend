@@ -946,21 +946,25 @@ KARAKTER PROMPT: ${charPrompt}
   "sahne_aciklamasi": "...(arka plan, ortam, atmosfer açıklaması)..."
 }`;
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch(`${BACKEND_URL}/ai-uret`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: userMsg }],
-          system: systemPrompt
+          platform: selectedPlatform,
+          char_prompt: charPrompt,
+          content_prompt: contentPrompt,
+          tone: selectedTone || "Profesyonel",
+          dil: lang,
+          sure: selectedDuration
         })
       });
 
-      const data = await response.json();
-      const rawText = data.content.map(i => i.text || '').join('');
-      const clean = rawText.replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(clean);
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error("AI hatası: " + (err.detail || response.status));
+      }
+
+      const parsed = await response.json();
 
       setStep('ps1', 'done');
 
