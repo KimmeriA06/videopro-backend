@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VideoPro — AI Video Üretici</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #080A0F;
+    --surface: #0F1219;
+    --surface2: #161B26;
+    --border: #1E2533;
+    --accent: #00E5FF;
+    --accent2: #BF5AF2;
+    --accent3: #FF6B35;
+    --text: #E8ECF4;
+    --muted: #6B7A99;
+    --success: #00D68F;
+    --youtube: #FF0000;
+    --tiktok: #00F2EA;
+    --instagram: #E1306C;
+    --instapost: #F77737;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Space Grotesk', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* HEADER */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 40px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: rgba(8,10,15,0.95);
+    backdrop-filter: blur(12px);
+    z-index: 100;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+
+  .logo-icon {
+    width: 32px;
+    height: 32px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+  }
+
+  .logo span { color: var(--accent); }
+
+  .status-pill {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--success);
+    background: rgba(0,214,143,0.1);
+    border: 1px solid rgba(0,214,143,0.2);
+    padding: 4px 12px;
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .status-pill::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    background: var(--success);
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* MAIN LAYOUT */
+  main {
+    display: grid;
+    grid-template-columns: 1fr 420px;
+    gap: 0;
+    min-height: calc(100vh - 73px);
+  }
+
+  /* LEFT PANEL */
+  .left-panel {
+    padding: 40px;
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+  }
+
+  .section-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 16px;
+  }
+
+  /* STEP INDICATOR */
+  .steps {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin-bottom: 40px;
+  }
+
+  .step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--muted);
+    font-weight: 500;
+  }
+
+  .step.active { color: var(--text); }
+  .step.done { color: var(--accent); }
+
+  .step-num {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    flex-shrink: 0;
+  }
+
+  .step.active .step-num {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(0,229,255,0.08);
+  }
+
+  .step.done .step-num {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--bg);
+  }
+
+  .step-line {
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+    margin: 0 12px;
+  }
+
+  /* PLATFORM SELECTOR */
+  .platform-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 32px;
+  }
+
+  .platform-card {
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .platform-card:hover {
+    border-color: var(--muted);
+    transform: translateY(-1px);
+  }
+
+  .platform-card.selected {
+    background: var(--surface2);
+  }
+
+  .platform-card.selected.yt { border-color: var(--youtube); box-shadow: 0 0 20px rgba(255,0,0,0.12); }
+  .platform-card.selected.tt { border-color: var(--tiktok); box-shadow: 0 0 20px rgba(0,242,234,0.12); }
+  .platform-card.selected.ig { border-color: var(--instagram); box-shadow: 0 0 20px rgba(225,48,108,0.12); }
+  .platform-card.selected.ip { border-color: var(--instapost); box-shadow: 0 0 20px rgba(247,119,55,0.12); }
+
+  .platform-icon { font-size: 22px; margin-bottom: 6px; }
+  .platform-name { font-size: 11px; font-weight: 600; color: var(--muted); }
+  .platform-card.selected .platform-name { color: var(--text); }
+  .platform-format { font-size: 10px; color: var(--muted); margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
+
+  .platform-check {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--accent);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    color: var(--bg);
+  }
+
+  .platform-card.selected .platform-check { display: flex; }
+
+  /* FORM ELEMENTS */
+  .form-group {
+    margin-bottom: 24px;
+  }
+
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  label strong { color: var(--text); }
+
+  textarea, input[type="text"], select {
+    width: 100%;
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 14px;
+    padding: 14px 16px;
+    outline: none;
+    transition: border-color 0.2s;
+    resize: none;
+  }
+
+  textarea:focus, input[type="text"]:focus, select:focus {
+    border-color: var(--accent);
+  }
+
+  textarea::placeholder, input::placeholder {
+    color: var(--muted);
+  }
+
+  .char-count {
+    text-align: right;
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* TONE PILLS */
+  .tone-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .tone-pill {
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 1.5px solid var(--border);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    color: var(--muted);
+    background: var(--surface);
+  }
+
+  .tone-pill:hover { border-color: var(--muted); color: var(--text); }
+  .tone-pill.selected {
+    border-color: var(--accent2);
+    color: var(--accent2);
+    background: rgba(191,90,242,0.08);
+  }
+
+  /* DURATION */
+  .duration-grid {
+    display: flex;
+    gap: 8px;
+  }
+
+  .duration-btn {
+    flex: 1;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1.5px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: center;
+  }
+
+  .duration-btn:hover { border-color: var(--muted); color: var(--text); }
+  .duration-btn.selected {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(0,229,255,0.06);
+  }
+
+  /* GENERATE BUTTON */
+  .generate-btn {
+    width: 100%;
+    padding: 16px;
+    border-radius: 12px;
+    border: none;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #000;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 8px;
+    letter-spacing: -0.3px;
+  }
+
+  .generate-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 30px rgba(0,229,255,0.25);
+  }
+
+  .generate-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+  }
+
+  /* RIGHT PANEL */
+  .right-panel {
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .right-header {
+    padding: 24px 28px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .right-title {
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  /* PREVIEW AREA */
+  .preview-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 28px;
+    gap: 16px;
+  }
+
+  /* Video frame preview */
+  .video-frame {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s;
+  }
+
+  .video-frame.landscape { width: 340px; height: 191px; }
+  .video-frame.portrait { width: 180px; height: 320px; }
+  .video-frame.square { width: 280px; height: 280px; }
+
+  .frame-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    color: var(--muted);
+  }
+
+  .frame-placeholder .icon { font-size: 36px; }
+  .frame-placeholder p { font-size: 12px; text-align: center; max-width: 160px; }
+
+  /* OUTPUT SECTION */
+  .output-section {
+    padding: 0 28px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  /* Character card */
+  .char-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: none;
+  }
+
+  .char-card.visible { display: block; }
+
+  .char-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .char-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent2), var(--accent));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    overflow: hidden;
+  }
+
+  .char-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .char-info { flex: 1; }
+  .char-name { font-size: 13px; font-weight: 600; }
+  .char-role { font-size: 11px; color: var(--muted); }
+
+  .char-bio {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  /* Script output */
+  .script-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: none;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .script-card.visible { display: block; }
+
+  .script-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--accent);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .script-text {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+
+  /* Progress */
+  .progress-section {
+    padding: 0 28px;
+    display: none;
+  }
+
+  .progress-section.visible { display: block; }
+
+  .progress-steps { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+
+  .prog-step {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .prog-step.active { color: var(--text); }
+  .prog-step.done { color: var(--success); }
+
+  .prog-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    flex-shrink: 0;
+  }
+
+  .prog-step.active .prog-icon {
+    border-color: var(--accent);
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  .prog-step.done .prog-icon {
+    border-color: var(--success);
+    background: var(--success);
+    color: var(--bg);
+  }
+
+  /* Download button */
+  .download-btn {
+    width: 100%;
+    padding: 13px;
+    border-radius: 10px;
+    border: 1.5px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: all 0.2s;
+    margin: 0 28px 28px;
+  }
+
+  .download-btn.visible {
+    display: flex;
+  }
+
+  .download-btn:hover {
+    background: rgba(0,229,255,0.08);
+  }
+
+  /* Loading animation in frame */
+  .loading-frame {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .loading-frame.visible { display: flex; }
+
+  .scanner {
+    width: 60px;
+    height: 60px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  /* Divider */
+  .divider {
+    height: 1px;
+    background: var(--border);
+    margin: 0 28px;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+    .right-panel { border-top: 1px solid var(--border); }
+    .platform-grid { grid-template-columns: repeat(2, 1fr); }
+    header { padding: 16px 20px; }
+    .left-panel { padding: 24px 20px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">▶</div>
+    Video<span>Pro</span>
+  </div>
+  <div class="status-pill">AI Hazır</div>
+</header>
+
+<main>
+  <!-- LEFT PANEL -->
+  <div class="left-panel">
+
+    <!-- Steps -->
+    <div class="steps">
+      <div class="step active" id="step1">
+        <div class="step-num">1</div>
+        <span>Platform</span>
+      </div>
+      <div class="step-line"></div>
+      <div class="step" id="step2">
+        <div class="step-num">2</div>
+        <span>Karakter</span>
+      </div>
+      <div class="step-line"></div>
+      <div class="step" id="step3">
+        <div class="step-num">3</div>
+        <span>İçerik</span>
+      </div>
+      <div class="step-line"></div>
+      <div class="step" id="step4">
+        <div class="step-num">4</div>
+        <span>Üret</span>
+      </div>
+    </div>
+
+    <!-- Platform -->
+    <div class="section-label">Platform Seç</div>
+    <div class="platform-grid" id="platformGrid">
+      <div class="platform-card yt" data-platform="youtube" data-format="16:9" data-ratio="landscape" onclick="selectPlatform(this)">
+        <div class="platform-check">✓</div>
+        <div class="platform-icon">▶</div>
+        <div class="platform-name">YouTube</div>
+        <div class="platform-format">1920×1080</div>
+      </div>
+      <div class="platform-card tt" data-platform="tiktok" data-format="9:16" data-ratio="portrait" onclick="selectPlatform(this)">
+        <div class="platform-check">✓</div>
+        <div class="platform-icon">♪</div>
+        <div class="platform-name">TikTok</div>
+        <div class="platform-format">1080×1920</div>
+      </div>
+      <div class="platform-card ig" data-platform="reels" data-format="9:16" data-ratio="portrait" onclick="selectPlatform(this)">
+        <div class="platform-check">✓</div>
+        <div class="platform-icon">◈</div>
+        <div class="platform-name">IG Reels</div>
+        <div class="platform-format">1080×1920</div>
+      </div>
+      <div class="platform-card ip" data-platform="instapost" data-format="1:1" data-ratio="square" onclick="selectPlatform(this)">
+        <div class="platform-check">✓</div>
+        <div class="platform-icon">⬛</div>
+        <div class="platform-name">IG Post</div>
+        <div class="platform-format">1080×1080</div>
+      </div>
+    </div>
+
+    <!-- Character Prompt -->
+    <div class="form-group">
+      <label><strong>Karakter Prompt'u</strong> — Kim konuşacak?</label>
+      <textarea id="charPrompt" rows="3" placeholder="Örn: Finansal hizmetler sektöründe güvenilir, 35 yaşında bir iş insanı. Profesyonel ama samimi. Ofis ortamında görünsün." oninput="updateCharCount(this, 'charCount')"></textarea>
+      <div class="char-count"><span id="charCount">0</span> / 300</div>
+    </div>
+
+    <!-- Content -->
+    <div class="form-group">
+      <label><strong>Video İçeriği</strong> — Ne anlatılsın?</label>
+      <textarea id="contentPrompt" rows="4" placeholder="Örn: Yatırım tasarrufu için 3 altın kural. Enflasyona karşı portföy koruması. Her Türk'ün bilmesi gereken finansal ipuçları." oninput="updateCharCount(this, 'contentCount')"></textarea>
+      <div class="char-count"><span id="contentCount">0</span> / 500</div>
+    </div>
+
+    <!-- Tone -->
+    <div class="form-group">
+      <label><strong>Ton</strong></label>
+      <div class="tone-grid">
+        <div class="tone-pill" onclick="selectTone(this)">Profesyonel</div>
+        <div class="tone-pill" onclick="selectTone(this)">Samimi</div>
+        <div class="tone-pill" onclick="selectTone(this)">Enerjik</div>
+        <div class="tone-pill" onclick="selectTone(this)">Eğitici</div>
+        <div class="tone-pill" onclick="selectTone(this)">Heyecanlı</div>
+        <div class="tone-pill" onclick="selectTone(this)">Sakin</div>
+      </div>
+    </div>
+
+    <!-- Duration -->
+    <div class="form-group">
+      <label><strong>Video Süresi</strong></label>
+      <div class="duration-grid">
+        <button class="duration-btn" onclick="selectDuration(this, 30)">30 sn</button>
+        <button class="duration-btn" onclick="selectDuration(this, 60)">1 dk</button>
+        <button class="duration-btn" onclick="selectDuration(this, 180)">3 dk</button>
+        <button class="duration-btn" onclick="selectDuration(this, 600)">10 dk</button>
+      </div>
+    </div>
+
+    <!-- Language -->
+    <div class="form-group">
+      <label><strong>Dil</strong></label>
+      <select id="langSelect">
+        <option value="tr">🇹🇷 Türkçe</option>
+        <option value="en">🇬🇧 İngilizce</option>
+      </select>
+    </div>
+
+    <button class="generate-btn" id="generateBtn" onclick="generateVideo()">
+      ▶ Video Üret
+    </button>
+
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="right-panel">
+    <div class="right-header">
+      <div class="right-title">Önizleme</div>
+      <div id="platformBadge" style="font-size:11px; color: var(--muted); font-family: 'JetBrains Mono', monospace;">— platform seçilmedi</div>
+    </div>
+
+    <div class="preview-area">
+      <div class="video-frame landscape" id="videoFrame">
+        <div class="frame-placeholder" id="framePlaceholder">
+          <div class="icon">🎬</div>
+          <p>Platform seç ve üretmeye başla</p>
+        </div>
+        <div class="loading-frame" id="loadingFrame">
+          <div class="scanner"></div>
+          <p style="font-size:12px; color: var(--muted);">AI üretiyor...</p>
+        </div>
+        <img id="generatedImage" style="width:100%;height:100%;object-fit:cover;display:none;" />
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div class="progress-section" id="progressSection">
+      <div class="progress-steps" id="progressSteps">
+        <div class="prog-step" id="ps1">
+          <div class="prog-icon">◌</div>
+          <span>Karakter oluşturuluyor</span>
+        </div>
+        <div class="prog-step" id="ps2">
+          <div class="prog-icon">◌</div>
+          <span>Senaryo yazılıyor</span>
+        </div>
+        <div class="prog-step" id="ps3">
+          <div class="prog-icon">◌</div>
+          <span>Görsel üretiliyor</span>
+        </div>
+        <div class="prog-step" id="ps4">
+          <div class="prog-icon">◌</div>
+          <span>Video derleniyor</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider" id="divider1" style="display:none;"></div>
+
+    <!-- Character Card -->
+    <div class="output-section">
+      <div class="char-card" id="charCard">
+        <div class="char-header">
+          <div class="char-avatar" id="charAvatar">👤</div>
+          <div class="char-info">
+            <div class="char-name" id="charName">—</div>
+            <div class="char-role" id="charRole">—</div>
+          </div>
+        </div>
+        <div class="char-bio" id="charBio"></div>
+      </div>
+
+      <div class="script-card" id="scriptCard">
+        <div class="script-label">📄 Senaryo</div>
+        <div class="script-text" id="scriptText"></div>
+      </div>
+    </div>
+
+    <button class="download-btn" id="downloadBtn">
+      ⬇ MP4 İndir
+    </button>
+
+  </div>
+</main>
+
+<script>
+  // ⚙️ Render.com'a deploy ettikten sonra buraya backend URL'ini yaz
+  const BACKEND_URL = "https://videopro-backend.onrender.com";
+
+  let selectedPlatform = null;
+  let selectedTone = null;
+  let selectedDuration = 60;
+  let generatedData = null;
+  let downloadUrl = null;
+
+  function selectPlatform(el) {
+    document.querySelectorAll('.platform-card').forEach(c => c.classList.remove('selected'));
+    el.classList.add('selected');
+    selectedPlatform = el.dataset.platform;
+    const ratio = el.dataset.ratio;
+
+    // Update video frame
+    const frame = document.getElementById('videoFrame');
+    frame.className = 'video-frame ' + ratio;
+
+    // Update badge
+    const names = {youtube:'YouTube • 16:9', tiktok:'TikTok • 9:16', reels:'IG Reels • 9:16', instapost:'IG Post • 1:1'};
+    document.getElementById('platformBadge').textContent = names[selectedPlatform] || '';
+
+    updateSteps();
+  }
+
+  function selectTone(el) {
+    document.querySelectorAll('.tone-pill').forEach(p => p.classList.remove('selected'));
+    el.classList.add('selected');
+    selectedTone = el.textContent;
+    updateSteps();
+  }
+
+  function selectDuration(el, val) {
+    document.querySelectorAll('.duration-btn').forEach(b => b.classList.remove('selected'));
+    el.classList.add('selected');
+    selectedDuration = val;
+  }
+
+  function updateCharCount(el, countId) {
+    document.getElementById(countId).textContent = el.value.length;
+    updateSteps();
+  }
+
+  function updateSteps() {
+    const s1 = document.getElementById('step1');
+    const s2 = document.getElementById('step2');
+    const s3 = document.getElementById('step3');
+
+    if (selectedPlatform) {
+      s1.className = 'step done';
+      s2.className = 'step active';
+    }
+
+    const charVal = document.getElementById('charPrompt').value.trim();
+    if (charVal.length > 10) {
+      s2.className = 'step done';
+      s3.className = 'step active';
+    }
+
+    const contentVal = document.getElementById('contentPrompt').value.trim();
+    if (contentVal.length > 10) {
+      s3.className = 'step done';
+    }
+  }
+
+  async function generateVideo() {
+    const charPrompt = document.getElementById('charPrompt').value.trim();
+    const contentPrompt = document.getElementById('contentPrompt').value.trim();
+    const lang = document.getElementById('langSelect').value;
+
+    if (!selectedPlatform) return alert('Lütfen bir platform seçin.');
+    if (!charPrompt) return alert('Lütfen karakter prompt\'u girin.');
+    if (!contentPrompt) return alert('Lütfen video içeriğini girin.');
+
+    // UI State
+    const btn = document.getElementById('generateBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Üretiliyor...';
+
+    document.getElementById('framePlaceholder').style.display = 'none';
+    document.getElementById('loadingFrame').classList.add('visible');
+    document.getElementById('progressSection').classList.add('visible');
+    document.getElementById('divider1').style.display = 'block';
+
+    document.getElementById('charCard').classList.remove('visible');
+    document.getElementById('scriptCard').classList.remove('visible');
+    document.getElementById('downloadBtn').classList.remove('visible');
+    document.getElementById('generatedImage').style.display = 'none';
+
+    // Reset progress
+    ['ps1','ps2','ps3','ps4'].forEach(id => {
+      const el = document.getElementById(id);
+      el.className = 'prog-step';
+      el.querySelector('.prog-icon').textContent = '◌';
+    });
+
+    try {
+      // Step 1: Character
+      setStep('ps1', 'active');
+      await delay(400);
+
+      const platformNames = {
+        youtube: 'YouTube (yatay 16:9)',
+        tiktok: 'TikTok (dikey 9:16, kısa)',
+        reels: 'Instagram Reels (dikey 9:16)',
+        instapost: 'Instagram Post (kare 1:1)'
+      };
+
+      const langName = lang === 'tr' ? 'Türkçe' : 'İngilizce';
+      const durLabel = selectedDuration < 60 ? `${selectedDuration} saniye` : `${selectedDuration/60} dakika`;
+
+      const systemPrompt = `Sen bir AI video prodüksiyon asistanısın. Kullanıcının istediği karakter ve içeriğe göre video senaryosu üretiyorsun. Sadece JSON formatında yanıt ver, başka hiçbir şey yazma.`;
+
+      const userMsg = `Platform: ${platformNames[selectedPlatform]}
+Dil: ${langName}
+Süre: ${durLabel}
+Ton: ${selectedTone || 'Profesyonel'}
+
+KARAKTER PROMPT: ${charPrompt}
+İÇERİK: ${contentPrompt}
+
+Şu JSON formatında yanıt ver:
+{
+  "karakter": {
+    "isim": "...",
+    "unvan": "...",
+    "biyografi": "...(2 cümle)...",
+    "gorsel_prompt_en": "professional portrait photo of [description], studio lighting, clean background"
+  },
+  "senaryo": "...(${langName} dilinde, ${durLabel} sürelik konuşma metni, doğal ve akıcı)...",
+  "sahne_aciklamasi": "...(arka plan, ortam, atmosfer açıklaması)..."
+}`;
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{ role: "user", content: userMsg }],
+          system: systemPrompt
+        })
+      });
+
+      const data = await response.json();
+      const rawText = data.content.map(i => i.text || '').join('');
+      const clean = rawText.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(clean);
+
+      setStep('ps1', 'done');
+
+      // Step 2: Script
+      setStep('ps2', 'active');
+      await delay(600);
+
+      // Show character
+      document.getElementById('charName').textContent = parsed.karakter.isim;
+      document.getElementById('charRole').textContent = parsed.karakter.unvan;
+      document.getElementById('charBio').textContent = parsed.karakter.biyografi;
+      document.getElementById('charCard').classList.add('visible');
+
+      setStep('ps2', 'done');
+
+      // Show script
+      document.getElementById('scriptText').textContent = parsed.senaryo;
+      document.getElementById('scriptCard').classList.add('visible');
+
+      // Step 3: Image
+      setStep('ps3', 'active');
+      await delay(300);
+
+      const imgPrompt = parsed.karakter.gorsel_prompt_en;
+      const ratio = selectedPlatform === 'youtube' ? '16:9' : selectedPlatform === 'instapost' ? '1:1' : '9:16';
+      const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(imgPrompt + ', ' + parsed.sahne_aciklamasi)}&width=512&height=512&nologo=true`;
+
+      const img = document.getElementById('generatedImage');
+      img.onload = () => {
+        document.getElementById('loadingFrame').classList.remove('visible');
+        img.style.display = 'block';
+        setStep('ps3', 'done');
+      };
+      img.onerror = () => {
+        document.getElementById('loadingFrame').classList.remove('visible');
+        document.getElementById('framePlaceholder').style.display = 'flex';
+        setStep('ps3', 'done');
+      };
+      img.src = imgUrl;
+
+      await delay(2000);
+
+      // Step 4: Gerçek backend ile MP4 üret
+      setStep('ps4', 'active');
+
+      const videoResp = await fetch(`${BACKEND_URL}/video-olustur`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          platform: selectedPlatform,
+          karakter_isim: parsed.karakter.isim,
+          karakter_unvan: parsed.karakter.unvan,
+          gorsel_prompt: parsed.karakter.gorsel_prompt_en,
+          senaryo: parsed.senaryo,
+          sahne_aciklamasi: parsed.sahne_aciklamasi,
+          dil: lang,
+          sure: selectedDuration
+        })
+      });
+
+      if (!videoResp.ok) {
+        const err = await videoResp.json();
+        throw new Error("Backend hatası: " + (err.detail || videoResp.status));
+      }
+
+      const videoData = await videoResp.json();
+      downloadUrl = `${BACKEND_URL}${videoData.download_url}`;
+
+      setStep('ps4', 'done');
+
+      // Done
+      document.getElementById('downloadBtn').classList.add('visible');
+      document.getElementById('step4').className = 'step done';
+
+      generatedData = parsed;
+
+    } catch (err) {
+      console.error(err);
+      alert('Bir hata oluştu: ' + err.message);
+      document.getElementById('loadingFrame').classList.remove('visible');
+      document.getElementById('framePlaceholder').style.display = 'flex';
+    }
+
+    btn.disabled = false;
+    btn.textContent = '▶ Yeniden Üret';
+  }
+
+  function setStep(id, state) {
+    const el = document.getElementById(id);
+    el.className = 'prog-step ' + state;
+    if (state === 'active') el.querySelector('.prog-icon').textContent = '↻';
+    if (state === 'done') el.querySelector('.prog-icon').textContent = '✓';
+  }
+
+  function delay(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
+
+  // Download button — gerçek MP4 indir
+  document.getElementById('downloadBtn').addEventListener('click', () => {
+    if (downloadUrl) {
+      window.open(downloadUrl, '_blank');
+    } else {
+      alert('Önce video üretmelisin.');
+    }
+  });
+</script>
+</body>
+</html>
