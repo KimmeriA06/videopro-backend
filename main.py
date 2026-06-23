@@ -161,3 +161,12 @@ def _fmt_time(seconds: float) -> str:
     s = int(seconds % 60)
     ms = int((seconds % 1) * 1000)
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+import os
+
+@app.get("/uygulama")
+async def uygulama():
+    html_path = os.path.join(os.path.dirname(__file__), "videopro-creator.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read())
