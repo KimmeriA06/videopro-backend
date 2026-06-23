@@ -2,10 +2,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
-import os, uuid, subprocess, requests
+import os, uuid, subprocess, requests, json, re
 from gtts import gTTS
 from PIL import Image
 import httpx
+import imageio_ffmpeg
+
+FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+FFPROBE_PATH = os.path.join(os.path.dirname(FFMPEG_PATH), "ffprobe")
 
 app = FastAPI(title="VideoPro Backend")
 
@@ -61,7 +65,6 @@ async def uygulama():
 
 @app.post("/ai-uret")
 async def ai_uret(req: AIRequest):
-    """Groq ile karakter ve senaryo üret"""
     platform_names = {
         "youtube": "YouTube (yatay 16:9)",
         "tiktok": "TikTok (dikey 9:16, kısa)",
@@ -111,8 +114,6 @@ KARAKTER PROMPT: {req.char_prompt}
 
     data = resp.json()
     raw = data["choices"][0]["message"]["content"]
-
-    import json, re
     clean = re.sub(r'```json|```', '', raw).strip()
     parsed = json.loads(clean)
     return parsed
@@ -149,7 +150,7 @@ async def video_olustur(req: VideoRequest):
 
         # Ses süresi
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            [FFPROBE_PATH, "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
             capture_output=True, text=True
         )
@@ -162,12 +163,11 @@ async def video_olustur(req: VideoRequest):
         # 4. FFmpeg MP4
         output_path = f"{job_dir}/video.mp4"
         ffmpeg_cmd = [
-            "ffmpeg", "-y",
+            FFMPEG_PATH, "-y",
             "-loop", "1", "-i", img_path,
             "-i", audio_path,
             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                   f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
-                   f"subtitles={srt_path}:force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2,Alignment=2'",
+                   f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
             "-c:v", "libx264", "-tune", "stillimage",
             "-c:a", "aac", "-b:a", "192k",
             "-pix_fmt", "yuv420p", "-shortest",
