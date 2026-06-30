@@ -154,6 +154,7 @@ class ChangeCredentialsRequest(BaseModel):
 
 
 
+class GenerateVideoRequest(BaseModel):
     business_name: str
     service: str
     target_audience: str = "Genel"
