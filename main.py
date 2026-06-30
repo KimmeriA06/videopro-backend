@@ -32,7 +32,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import requests
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Request
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import bcrypt
@@ -54,6 +55,10 @@ MAKE_WEBHOOK_URL = os.environ.get(
 )
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
 DB_PATH = os.environ.get("SQLITE_PATH", "videopro.db")
+UPLOADS_DIR = os.environ.get("UPLOADS_DIR", os.path.join(os.path.dirname(DB_PATH) or ".", "uploads"))
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+# Bu backend'in disaridan erisilebilir adresi (paylasilan medya linklerinde kullanilir)
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "")
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -470,6 +475,57 @@ def generate_video(body: GenerateVideoRequest, user=Depends(get_current_user)):
         video_row_id = cur.lastrowid
 
     return {"ok": resp.ok, "make_status": resp.status_code, "video_row_id": video_row_id, "heygen_video_id": heygen_video_id}
+
+
+@app.post("/api/videos/upload")
+def upload_own_video(
+    request: Request,
+    business_id: int = Form(...),
+    business_name: str = Form(...),
+    service: str = Form(""),
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
+    """Kullanicinin kendi bilgisayarindan yukledigi videoyu kaydeder,
+    HeyGen/Make.com'a hic gitmez, direkt 'tamamlandi' olarak isaretlenir."""
+    if user["role"] != "admin" and business_id != user["business_id"]:
+        raise HTTPException(status_code=403, detail="Bu işletme için içerik yükleme yetkin yok")
+
+    allowed_ext = {".mp4", ".mov", ".webm", ".m4v"}
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in allowed_ext:
+        raise HTTPException(status_code=400, detail="Sadece video dosyaları (.mp4, .mov, .webm, .m4v) yükleyebilirsin")
+
+    filename = f"{uuid.uuid4().hex}{ext}"
+    filepath = os.path.join(UPLOADS_DIR, filename)
+    with open(filepath, "wb") as f:
+        while True:
+            chunk = file.file.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+
+    base_url = PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
+    video_url = f"{base_url}/media/{filename}"
+
+    with get_db() as db:
+        cur = db.execute(
+            "INSERT INTO videos (user_id, business_id, content_type, business_name, service, status, video_url) "
+            "VALUES (?, ?, 'own_upload', ?, ?, 'completed', ?)",
+            (user["id"], business_id, business_name, service, video_url),
+        )
+        video_row_id = cur.lastrowid
+
+    return {"ok": True, "video_row_id": video_row_id, "video_url": video_url}
+
+
+@app.get("/media/{filename}")
+def serve_media(filename: str):
+    safe_name = os.path.basename(filename)  # path traversal koruması
+    filepath = os.path.join(UPLOADS_DIR, safe_name)
+    if not os.path.isfile(filepath):
+        raise HTTPException(status_code=404, detail="Dosya bulunamadı")
+    return FileResponse(filepath, media_type="video/mp4")
 
 
 
