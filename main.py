@@ -1,224 +1,360 @@
-from fastapi import FastAPI, HTTPException
+"""
+VideoPro Backend API
+- JWT tabanli kullanici girisi (coklu kullanici / coklu isletme)
+- Claude script onizleme proxy (CORS sorununu cozer, API key tarayicida durmaz)
+- Make.com webhook proxy (video olusturma istegini sunucu tarafindan gonderir)
+- HeyGen video durum sorgulama proxy (gercek durum takibi)
+
+Calistirma (lokal):
+    pip install -r requirements.txt --break-system-packages
+    uvicorn main:app --reload --port 8000
+
+Railway'e deploy:
+    1) Bu klasoru ayri bir GitHub reposuna push et (orn: videopro-backend)
+    2) Railway'de "New Project" -> "Deploy from GitHub repo" ile sec
+    3) Environment Variables sekmesinde asagidaki degiskenleri ekle:
+       - JWT_SECRET            (rastgele uzun bir string, orn: openssl rand -hex 32)
+       - ANTHROPIC_API_KEY     (Claude API anahtarin)
+       - HEYGEN_API_KEY        (HeyGen API anahtarin)
+       - MAKE_WEBHOOK_URL      (https://hook.eu1.make.com/mvntpni2p9pfhy2o7l831ypkka3ai86c)
+       - DATABASE_URL          (Railway Postgres eklersen otomatik gelir; eklemezsen SQLite kullanilir)
+       - ALLOWED_ORIGIN        (ragbetyazilim.com gibi frontend'in yayinda oldugu domain, * da olur ama onerilmez)
+    4) Railway "Settings -> Networking -> Generate Domain" ile public URL al,
+       index.html icindeki API_BASE_URL'i bu URL ile guncelle.
+"""
+
+import os
+import sqlite3
+import time
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+
+import requests
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import bcrypt
+from jose import jwt, JWTError
 from pydantic import BaseModel
-import os, uuid, subprocess, requests, json, re
-from gtts import gTTS
-from PIL import Image
-import httpx
-import imageio_ffmpeg
 
-FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+# ---------- Ayarlar ----------
+JWT_SECRET = os.environ.get("JWT_SECRET", "DEGISTIR-bu-cok-onemli-uretimde")
+JWT_ALGO = "HS256"
+JWT_EXPIRE_HOURS = 24 * 7  # 7 gun
 
-app = FastAPI(title="VideoPro Backend")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+HEYGEN_API_KEY = os.environ.get("HEYGEN_API_KEY", "")
+MAKE_WEBHOOK_URL = os.environ.get(
+    "MAKE_WEBHOOK_URL",
+    "https://hook.eu1.make.com/mvntpni2p9pfhy2o7l831ypkka3ai86c",
+)
+ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
+DB_PATH = os.environ.get("SQLITE_PATH", "videopro.db")
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except ValueError:
+        return False
+
+
+bearer_scheme = HTTPBearer()
+
+app = FastAPI(title="VideoPro API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[ALLOWED_ORIGIN] if ALLOWED_ORIGIN != "*" else ["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-OUTPUT_DIR = "/tmp/videopro"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-
-PLATFORM_SIZES = {
-    "youtube":   (854, 480),
-    "tiktok":    (480, 854),
-    "reels":     (480, 854),
-    "instapost": (480, 480),
-}
-
-class VideoRequest(BaseModel):
-    platform: str
-    karakter_isim: str = ""
-    karakter_unvan: str = ""
-    gorsel_prompt: str = ""
-    senaryo: str = ""
-    sahne_aciklamasi: str = ""
-    dil: str = "tr"
-    sure: int = 60
-
-class AIRequest(BaseModel):
-    platform: str
-    char_prompt: str
-    content_prompt: str
-    tone: str = "Profesyonel"
-    dil: str = "tr"
-    sure: int = 60
-
-
-@app.get("/")
-def root():
-    return {"status": "VideoPro Backend çalışıyor ✓"}
-
-
-@app.get("/uygulama")
-async def uygulama():
-    html_path = os.path.join(os.path.dirname(__file__), "videopro-creator.html")
-    with open(html_path, "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read())
-
-
-@app.post("/ai-uret")
-async def ai_uret(req: AIRequest):
-    platform_names = {
-        "youtube": "YouTube (yatay 16:9)",
-        "tiktok": "TikTok (dikey 9:16, kısa)",
-        "reels": "Instagram Reels (dikey 9:16)",
-        "instapost": "Instagram Post (kare 1:1)"
-    }
-    lang_name = "Türkçe" if req.dil == "tr" else "İngilizce"
-    dur_label = f"{req.sure} saniye" if req.sure < 60 else f"{req.sure // 60} dakika"
-
-    prompt = f"""Platform: {platform_names.get(req.platform, req.platform)}
-Dil: {lang_name}
-Süre: {dur_label}
-Ton: {req.tone}
-
-KARAKTER PROMPT: {req.char_prompt}
-İÇERİK: {req.content_prompt}
-
-Şu JSON formatında yanıt ver, başka hiçbir şey yazma:
-{{
-  "karakter": {{
-    "isim": "...",
-    "unvan": "...",
-    "biyografi": "...(2 cümle)...",
-    "gorsel_prompt_en": "professional portrait photo of [description], studio lighting, clean background"
-  }},
-  "senaryo": "...({lang_name} dilinde, {dur_label} sürelik konuşma metni)...",
-  "sahne_aciklamasi": "...(arka plan, ortam açıklaması)..."
-}}"""
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.7,
-                "max_tokens": 1000
-            }
-        )
-
-    if resp.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Groq hatası: {resp.text}")
-
-    data = resp.json()
-    raw = data["choices"][0]["message"]["content"]
-    clean = re.sub(r'```json|```', '', raw).strip()
-    parsed = json.loads(clean)
-    return parsed
-
-
-@app.post("/video-olustur")
-async def video_olustur(req: VideoRequest):
-    job_id = str(uuid.uuid4())[:8]
-    job_dir = f"{OUTPUT_DIR}/{job_id}"
-    os.makedirs(job_dir, exist_ok=True)
-
+# ---------- DB (basit SQLite - istersen sonra Postgres'e tasinir) ----------
+@contextmanager
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     try:
-        w, h = PLATFORM_SIZES.get(req.platform, (1920, 1080))
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
 
-        # 1. GÖRSEL İNDİR
-        img_prompt = req.gorsel_prompt + ", " + req.sahne_aciklamasi
-        img_url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(img_prompt)}?width={w}&height={h}&nologo=true"
 
-        async with httpx.AsyncClient(timeout=40) as client:
-            img_resp = await client.get(img_url)
+def init_db():
+    with get_db() as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                business_name TEXT,
+                role TEXT DEFAULT 'user',
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS videos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                heygen_video_id TEXT,
+                business_name TEXT,
+                service TEXT,
+                status TEXT DEFAULT 'processing',
+                video_url TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        # Ilk admin kullanicisi yoksa olustur (kullanici adi/sifreyi ilk girişten sonra degistir!)
+        existing = db.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()
+        if not existing:
+            db.execute(
+                "INSERT INTO users (username, password_hash, business_name, role) VALUES (?, ?, ?, ?)",
+                ("admin", hash_password("DegistirilecekSifre123!"), "VideoPro Admin", "admin"),
+            )
 
-        img_path = f"{job_dir}/bg.jpg"
-        with open(img_path, "wb") as f:
-            f.write(img_resp.content)
 
-        img = Image.open(img_path).resize((w, h), Image.LANCZOS)
-        img.save(img_path, "JPEG", quality=90)
+init_db()
 
-        # 2. SESLENDİRME
-        lang_code = "tr" if req.dil == "tr" else "en"
-        tts = gTTS(text=req.senaryo, lang=lang_code, slow=False)
-        audio_path = f"{job_dir}/ses.mp3"
-        tts.save(audio_path)
 
-        # Ses süresi (ffmpeg ile)
-        probe = subprocess.run(
-            [FFMPEG_PATH, "-i", audio_path, "-f", "null", "-"],
-            capture_output=True, text=True
+# ---------- Modeller ----------
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    business_name: str = ""
+    role: str = "user"
+
+
+class ScriptPreviewRequest(BaseModel):
+    business: str
+    service: str
+    audience: str = "Genel"
+    message: str = "Hemen iletişime geçin"
+    tone: str = "samimi"
+    duration: str = "60"
+    lang_label: str = "Türkçe"
+
+
+class GenerateVideoRequest(BaseModel):
+    business_name: str
+    service: str
+    target_audience: str = "Genel"
+    message: str = "Hemen iletişime geçin"
+    tone: str = "samimi"
+    notes: str = ""
+    avatar_id: str = "Daisy-inskirt-20220818"
+    voice_id: str = ""
+    language: str = "tr"
+    script: str = ""
+
+
+# ---------- Auth yardimcilari ----------
+def create_token(user_row) -> str:
+    payload = {
+        "sub": str(user_row["id"]),
+        "username": user_row["username"],
+        "role": user_row["role"],
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    token = creds.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Gecersiz veya suresi dolmus oturum")
+    with get_db() as db:
+        user = db.execute("SELECT * FROM users WHERE id = ?", (payload["sub"],)).fetchone()
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanici bulunamadi")
+    return user
+
+
+def require_admin(user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Bu islem icin yetkin yok")
+    return user
+
+
+# ---------- Auth endpointleri ----------
+@app.post("/auth/login")
+def login(body: LoginRequest):
+    with get_db() as db:
+        user = db.execute("SELECT * FROM users WHERE username = ?", (body.username,)).fetchone()
+    if not user or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Kullanici adi veya sifre hatali")
+    token = create_token(user)
+    return {
+        "token": token,
+        "username": user["username"],
+        "business_name": user["business_name"],
+        "role": user["role"],
+    }
+
+
+@app.get("/auth/me")
+def me(user=Depends(get_current_user)):
+    return {
+        "username": user["username"],
+        "business_name": user["business_name"],
+        "role": user["role"],
+    }
+
+
+@app.post("/auth/users")
+def create_user(body: CreateUserRequest, admin=Depends(require_admin)):
+    """Sadece admin yeni musteri/kullanici hesabi acabilir."""
+    with get_db() as db:
+        exists = db.execute("SELECT id FROM users WHERE username = ?", (body.username,)).fetchone()
+        if exists:
+            raise HTTPException(status_code=400, detail="Bu kullanici adi zaten var")
+        db.execute(
+            "INSERT INTO users (username, password_hash, business_name, role) VALUES (?, ?, ?, ?)",
+            (body.username, hash_password(body.password), body.business_name, body.role),
         )
-        import re as _re
-        dur_match = _re.search(r"Duration: (\d+):(\d+):([\d.]+)", probe.stderr)
-        if dur_match:
-            h2, m2, s2 = dur_match.groups()
-            audio_duration = int(h2)*3600 + int(m2)*60 + float(s2)
-        else:
-            audio_duration = float(req.sure)
-
-        # 3. ALTYAZI
-        srt_path = f"{job_dir}/altyazi.srt"
-        _create_srt(req.senaryo, audio_duration, srt_path)
-
-        # 4. FFmpeg MP4
-        output_path = f"{job_dir}/video.mp4"
-        ffmpeg_cmd = [
-            FFMPEG_PATH, "-y",
-            "-loop", "1", "-i", img_path,
-            "-i", audio_path,
-            "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                   f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
-            "-c:v", "libx264", "-tune", "stillimage",
-            "-c:a", "aac", "-b:a", "192k",
-            "-pix_fmt", "yuv420p", "-shortest",
-            "-t", str(audio_duration + 1),
-            output_path
-        ]
-
-        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=120)
-        if result.returncode != 0:
-            raise Exception(f"FFmpeg hatası: {result.stderr[-500:]}")
-
-        return {
-            "status": "ok",
-            "job_id": job_id,
-            "download_url": f"/indir/{job_id}",
-            "sure": round(audio_duration, 1),
-            "platform": req.platform,
-            "boyut": f"{w}x{h}"
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True}
 
 
-@app.get("/indir/{job_id}")
-def indir(job_id: str):
-    video_path = f"{OUTPUT_DIR}/{job_id}/video.mp4"
-    if not os.path.exists(video_path):
-        raise HTTPException(status_code=404, detail="Video bulunamadı")
-    return FileResponse(video_path, media_type="video/mp4", filename="videopro_output.mp4")
+# ---------- Claude script onizleme proxy ----------
+@app.post("/api/script-preview")
+def script_preview(body: ScriptPreviewRequest, user=Depends(get_current_user)):
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="Sunucuda ANTHROPIC_API_KEY tanimli degil")
+
+    prompt = (
+        f"Sen bir video script yazarisin. Asagidaki bilgilere gore {body.duration} saniyelik kisa, "
+        f"etkileyici bir {body.lang_label} video senaryosu yaz. Senaryo {body.tone} bir tonla, dogal "
+        f"konusma dilinde olsun. Avatar tarafindan seslendirilecek.\n\n"
+        f"Isletme adi: {body.business}\nHizmet/Urun: {body.service}\n"
+        f"Hedef kitle: {body.audience}\nOzel mesaj: {body.message}\n\n"
+        f"Sadece senaryoyu yaz, baska aciklama ekleme. Tirnak isareti kullanma."
+    )
+
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1000,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Claude API hatasi: {resp.text}")
+    data = resp.json()
+    script = (data.get("content") or [{}])[0].get("text", "")
+    return {"script": script}
 
 
-def _create_srt(text: str, duration: float, path: str):
-    words = text.split()
-    chunk_size = max(6, len(words) // max(1, int(duration / 4)))
-    chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
-    time_per_chunk = duration / max(len(chunks), 1)
-    with open(path, "w", encoding="utf-8") as f:
-        for i, chunk in enumerate(chunks):
-            start = i * time_per_chunk
-            end = min((i + 1) * time_per_chunk, duration)
-            f.write(f"{i+1}\n{_fmt_time(start)} --> {_fmt_time(end)}\n{chunk}\n\n")
+# ---------- Video olusturma (Make.com proxy) ----------
+@app.post("/api/videos/generate")
+def generate_video(body: GenerateVideoRequest, user=Depends(get_current_user)):
+    payload = body.dict()
+    try:
+        resp = requests.post(MAKE_WEBHOOK_URL, json=payload, timeout=20)
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Make.com baglanti hatasi: {e}")
+
+    heygen_video_id = None
+    try:
+        resp_json = resp.json()
+        heygen_video_id = resp_json.get("video_id") or resp_json.get("data", {}).get("video_id")
+    except Exception:
+        pass
+
+    with get_db() as db:
+        cur = db.execute(
+            "INSERT INTO videos (user_id, heygen_video_id, business_name, service, status) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user["id"], heygen_video_id, body.business_name, body.service, "processing"),
+        )
+        video_row_id = cur.lastrowid
+
+    return {"ok": resp.ok, "make_status": resp.status_code, "video_row_id": video_row_id, "heygen_video_id": heygen_video_id}
 
 
-def _fmt_time(seconds: float) -> str:
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds % 1) * 1000)
-    return f"{h:02}:{m:02}:{s:02},{ms:03}"
+# ---------- Video listeleme + HeyGen gercek durum sorgulama ----------
+def fetch_heygen_status(heygen_video_id: str):
+    if not HEYGEN_API_KEY or not heygen_video_id:
+        return None
+    try:
+        resp = requests.get(
+            "https://api.heygen.com/v1/video_status.get",
+            params={"video_id": heygen_video_id},
+            headers={"X-Api-Key": HEYGEN_API_KEY},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json().get("data", {})
+        return {"status": data.get("status"), "video_url": data.get("video_url")}
+    except requests.RequestException:
+        return None
+
+
+@app.get("/api/videos")
+def list_videos(user=Depends(get_current_user)):
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM videos WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",
+            (user["id"],),
+        ).fetchall()
+
+    result = []
+    for row in rows:
+        item = dict(row)
+        if item["status"] == "processing" and item["heygen_video_id"]:
+            live = fetch_heygen_status(item["heygen_video_id"])
+            if live and live["status"]:
+                heygen_status = live["status"]
+                # HeyGen durumlari: pending / processing / completed / failed
+                if heygen_status == "completed":
+                    item["status"] = "completed"
+                    item["video_url"] = live["video_url"]
+                    with get_db() as db:
+                        db.execute(
+                            "UPDATE videos SET status = ?, video_url = ? WHERE id = ?",
+                            ("completed", live["video_url"], item["id"]),
+                        )
+                elif heygen_status == "failed":
+                    item["status"] = "failed"
+                    with get_db() as db:
+                        db.execute("UPDATE videos SET status = ? WHERE id = ?", ("failed", item["id"]))
+        result.append(item)
+    return {"videos": result}
+
+
+@app.get("/api/videos/{video_row_id}/status")
+def get_video_status(video_row_id: int, user=Depends(get_current_user)):
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM videos WHERE id = ? AND user_id = ?", (video_row_id, user["id"])
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Video bulunamadi")
+    live = fetch_heygen_status(row["heygen_video_id"]) if row["heygen_video_id"] else None
+    return {"db_status": row["status"], "live": live}
+
+
+@app.get("/health")
+def health():
+    return {"ok": True, "time": time.time()}
