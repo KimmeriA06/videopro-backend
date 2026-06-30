@@ -147,7 +147,13 @@ class ScriptPreviewRequest(BaseModel):
     lang_label: str = "Türkçe"
 
 
-class GenerateVideoRequest(BaseModel):
+class ChangeCredentialsRequest(BaseModel):
+    current_password: str
+    new_username: str = ""
+    new_password: str = ""
+
+
+
     business_name: str
     service: str
     target_audience: str = "Genel"
@@ -215,7 +221,47 @@ def me(user=Depends(get_current_user)):
     }
 
 
-@app.post("/auth/users")
+@app.post("/auth/change-credentials")
+def change_credentials(body: ChangeCredentialsRequest, user=Depends(get_current_user)):
+    if not verify_password(body.current_password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Mevcut şifre hatalı")
+
+    new_username = body.new_username.strip() or user["username"]
+    updates = {}
+
+    if new_username != user["username"]:
+        with get_db() as db:
+            exists = db.execute(
+                "SELECT id FROM users WHERE username = ? AND id != ?", (new_username, user["id"])
+            ).fetchone()
+        if exists:
+            raise HTTPException(status_code=400, detail="Bu kullanıcı adı zaten kullanılıyor")
+        updates["username"] = new_username
+
+    if body.new_password:
+        if len(body.new_password) < 6:
+            raise HTTPException(status_code=400, detail="Yeni şifre en az 6 karakter olmalı")
+        updates["password_hash"] = hash_password(body.new_password)
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="Değiştirilecek bir alan girilmedi")
+
+    with get_db() as db:
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        db.execute(f"UPDATE users SET {set_clause} WHERE id = ?", (*updates.values(), user["id"]))
+        updated = db.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+
+    new_token = create_token(updated)
+    return {
+        "ok": True,
+        "token": new_token,
+        "username": updated["username"],
+        "business_name": updated["business_name"],
+        "role": updated["role"],
+    }
+
+
+
 def create_user(body: CreateUserRequest, admin=Depends(require_admin)):
     """Sadece admin yeni musteri/kullanici hesabi acabilir."""
     with get_db() as db:
