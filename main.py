@@ -96,7 +96,20 @@ def init_db():
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 business_name TEXT,
+                business_id INTEGER,
                 role TEXT DEFAULT 'user',
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        existing_user_cols = [r["name"] for r in db.execute("PRAGMA table_info(users)").fetchall()]
+        if "business_id" not in existing_user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN business_id INTEGER")
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS businesses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                instagram TEXT,
+                notes TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
@@ -104,6 +117,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS videos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
+                business_id INTEGER,
+                content_type TEXT DEFAULT 'video',
                 heygen_video_id TEXT,
                 business_name TEXT,
                 service TEXT,
@@ -112,6 +127,15 @@ def init_db():
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
+        # Eski kurulumlarda yoksa kolonlari ekle (migration)
+        existing_cols = [r["name"] for r in db.execute("PRAGMA table_info(videos)").fetchall()]
+        if "business_id" not in existing_cols:
+            db.execute("ALTER TABLE videos ADD COLUMN business_id INTEGER")
+        if "content_type" not in existing_cols:
+            db.execute("ALTER TABLE videos ADD COLUMN content_type TEXT DEFAULT 'video'")
+        # Ilk isletmeyi olustur (yoksa)
+        if not db.execute("SELECT id FROM businesses LIMIT 1").fetchone():
+            db.execute("INSERT INTO businesses (name) VALUES (?)", ("Esra Güzellik Salonu",))
         # Ilk admin kullanicisi yoksa olustur (kullanici adi/sifreyi ilk girişten sonra degistir!)
         existing = db.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()
         if not existing:
@@ -130,10 +154,17 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class CreateBusinessRequest(BaseModel):
+    name: str
+    instagram: str = ""
+    notes: str = ""
+
+
 class CreateUserRequest(BaseModel):
     username: str
     password: str
     business_name: str = ""
+    business_id: int = 0
     role: str = "user"
 
 
@@ -156,6 +187,9 @@ class ChangeCredentialsRequest(BaseModel):
 
 class GenerateVideoRequest(BaseModel):
     business_name: str
+    business_id: int = 0
+    content_type: str = "video"  # video | image_silent | image_voiceover | slideshow
+    images: list[str] = []  # base64 data URL'leri (kucuk gorseller icin)
     service: str
     target_audience: str = "Genel"
     message: str = "Hemen iletişime geçin"
@@ -263,6 +297,30 @@ def change_credentials(body: ChangeCredentialsRequest, user=Depends(get_current_
 
 
 
+@app.get("/api/businesses")
+def list_businesses(user=Depends(get_current_user)):
+    with get_db() as db:
+        if user["role"] == "admin":
+            rows = db.execute("SELECT * FROM businesses ORDER BY name").fetchall()
+        else:
+            rows = db.execute(
+                "SELECT * FROM businesses WHERE id = ?", (user["business_id"],)
+            ).fetchall()
+    return {"businesses": [dict(r) for r in rows]}
+
+
+@app.post("/api/businesses")
+def create_business(body: CreateBusinessRequest, admin=Depends(require_admin)):
+    with get_db() as db:
+        cur = db.execute(
+            "INSERT INTO businesses (name, instagram, notes) VALUES (?, ?, ?)",
+            (body.name, body.instagram, body.notes),
+        )
+        new_id = cur.lastrowid
+    return {"ok": True, "id": new_id}
+
+
+@app.post("/auth/users")
 def create_user(body: CreateUserRequest, admin=Depends(require_admin)):
     """Sadece admin yeni musteri/kullanici hesabi acabilir."""
     with get_db() as db:
@@ -270,8 +328,15 @@ def create_user(body: CreateUserRequest, admin=Depends(require_admin)):
         if exists:
             raise HTTPException(status_code=400, detail="Bu kullanici adi zaten var")
         db.execute(
-            "INSERT INTO users (username, password_hash, business_name, role) VALUES (?, ?, ?, ?)",
-            (body.username, hash_password(body.password), body.business_name, body.role),
+            "INSERT INTO users (username, password_hash, business_name, business_id, role) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                body.username,
+                hash_password(body.password),
+                body.business_name,
+                body.business_id or None,
+                body.role,
+            ),
         )
     return {"ok": True}
 
@@ -315,9 +380,16 @@ def script_preview(body: ScriptPreviewRequest, user=Depends(get_current_user)):
 # ---------- Video olusturma (Make.com proxy) ----------
 @app.post("/api/videos/generate")
 def generate_video(body: GenerateVideoRequest, user=Depends(get_current_user)):
+    # Yetki kontrolu: admin herhangi bir isletme icin uretebilir,
+    # normal kullanici sadece kendi isletmesi icin uretebilir.
+    business_id = body.business_id or user["business_id"]
+    if user["role"] != "admin" and business_id != user["business_id"]:
+        raise HTTPException(status_code=403, detail="Bu işletme için içerik oluşturma yetkin yok")
+
     payload = body.dict()
+    payload["images_count"] = len(body.images)  # buyuk base64 datayi loglarda gormemek icin ozet
     try:
-        resp = requests.post(MAKE_WEBHOOK_URL, json=payload, timeout=20)
+        resp = requests.post(MAKE_WEBHOOK_URL, json=payload, timeout=30)
     except requests.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Make.com baglanti hatasi: {e}")
 
@@ -330,13 +402,14 @@ def generate_video(body: GenerateVideoRequest, user=Depends(get_current_user)):
 
     with get_db() as db:
         cur = db.execute(
-            "INSERT INTO videos (user_id, heygen_video_id, business_name, service, status) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (user["id"], heygen_video_id, body.business_name, body.service, "processing"),
+            "INSERT INTO videos (user_id, business_id, content_type, heygen_video_id, business_name, service, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user["id"], business_id or None, body.content_type, heygen_video_id, body.business_name, body.service, "processing"),
         )
         video_row_id = cur.lastrowid
 
     return {"ok": resp.ok, "make_status": resp.status_code, "video_row_id": video_row_id, "heygen_video_id": heygen_video_id}
+
 
 
 # ---------- Video listeleme + HeyGen gercek durum sorgulama ----------
@@ -361,10 +434,15 @@ def fetch_heygen_status(heygen_video_id: str):
 @app.get("/api/videos")
 def list_videos(user=Depends(get_current_user)):
     with get_db() as db:
-        rows = db.execute(
-            "SELECT * FROM videos WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",
-            (user["id"],),
-        ).fetchall()
+        if user["role"] == "admin":
+            rows = db.execute(
+                "SELECT * FROM videos ORDER BY created_at DESC LIMIT 100"
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT * FROM videos WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",
+                (user["id"],),
+            ).fetchall()
 
     result = []
     for row in rows:
