@@ -109,10 +109,17 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 instagram TEXT,
+                ig_account_id TEXT,
+                ig_access_token TEXT,
                 notes TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
+        existing_biz_cols = [r["name"] for r in db.execute("PRAGMA table_info(businesses)").fetchall()]
+        if "ig_account_id" not in existing_biz_cols:
+            db.execute("ALTER TABLE businesses ADD COLUMN ig_account_id TEXT")
+        if "ig_access_token" not in existing_biz_cols:
+            db.execute("ALTER TABLE businesses ADD COLUMN ig_access_token TEXT")
         db.execute("""
             CREATE TABLE IF NOT EXISTS videos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,6 +140,8 @@ def init_db():
             db.execute("ALTER TABLE videos ADD COLUMN business_id INTEGER")
         if "content_type" not in existing_cols:
             db.execute("ALTER TABLE videos ADD COLUMN content_type TEXT DEFAULT 'video'")
+        if "ig_posted" not in existing_cols:
+            db.execute("ALTER TABLE videos ADD COLUMN ig_posted INTEGER DEFAULT 0")
         # Ilk isletmeyi olustur (yoksa)
         if not db.execute("SELECT id FROM businesses LIMIT 1").fetchone():
             db.execute("INSERT INTO businesses (name) VALUES (?)", ("Esra Güzellik Salonu",))
@@ -158,6 +167,16 @@ class CreateBusinessRequest(BaseModel):
     name: str
     instagram: str = ""
     notes: str = ""
+    ig_account_id: str = ""
+    ig_access_token: str = ""
+
+
+class UpdateBusinessRequest(BaseModel):
+    name: str = ""
+    instagram: str = ""
+    notes: str = ""
+    ig_account_id: str = ""
+    ig_access_token: str = ""
 
 
 class CreateUserRequest(BaseModel):
@@ -306,18 +325,36 @@ def list_businesses(user=Depends(get_current_user)):
             rows = db.execute(
                 "SELECT * FROM businesses WHERE id = ?", (user["business_id"],)
             ).fetchall()
-    return {"businesses": [dict(r) for r in rows]}
+    result = []
+    for r in rows:
+        item = dict(r)
+        item["has_ig_token"] = bool(item.get("ig_access_token"))
+        item.pop("ig_access_token", None)  # token'i ag uzerinden hic gondermiyoruz
+        result.append(item)
+    return {"businesses": result}
 
 
 @app.post("/api/businesses")
 def create_business(body: CreateBusinessRequest, admin=Depends(require_admin)):
     with get_db() as db:
         cur = db.execute(
-            "INSERT INTO businesses (name, instagram, notes) VALUES (?, ?, ?)",
-            (body.name, body.instagram, body.notes),
+            "INSERT INTO businesses (name, instagram, notes, ig_account_id, ig_access_token) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (body.name, body.instagram, body.notes, body.ig_account_id, body.ig_access_token),
         )
         new_id = cur.lastrowid
     return {"ok": True, "id": new_id}
+
+
+@app.patch("/api/businesses/{business_id}")
+def update_business(business_id: int, body: UpdateBusinessRequest, admin=Depends(require_admin)):
+    updates = {k: v for k, v in body.dict().items() if v}
+    if not updates:
+        raise HTTPException(status_code=400, detail="Değiştirilecek bir alan girilmedi")
+    with get_db() as db:
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        db.execute(f"UPDATE businesses SET {set_clause} WHERE id = ?", (*updates.values(), business_id))
+    return {"ok": True}
 
 
 @app.post("/auth/users")
@@ -480,6 +517,83 @@ def get_video_status(video_row_id: int, user=Depends(get_current_user)):
     return {"db_status": row["status"], "live": live}
 
 
-@app.get("/health")
+@app.post("/api/videos/{video_row_id}/publish-instagram")
+def publish_to_instagram(video_row_id: int, user=Depends(get_current_user)):
+    with get_db() as db:
+        row = db.execute("SELECT * FROM videos WHERE id = ?", (video_row_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="İçerik bulunamadı")
+        if user["role"] != "admin" and row["user_id"] != user["id"] and row["business_id"] != user["business_id"]:
+            raise HTTPException(status_code=403, detail="Bu içeriği paylaşma yetkin yok")
+        if row["status"] != "completed" or not row["video_url"]:
+            raise HTTPException(status_code=400, detail="İçerik henüz hazır değil")
+
+        business = db.execute("SELECT * FROM businesses WHERE id = ?", (row["business_id"],)).fetchone()
+        if not business or not business["ig_account_id"] or not business["ig_access_token"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Bu işletme için Instagram hesabı bağlanmamış. İşletmelerim sayfasından Instagram hesap bilgilerini gir.",
+            )
+
+    ig_account_id = business["ig_account_id"]
+    access_token = business["ig_access_token"]
+    media_url = row["video_url"]
+    is_video = row["content_type"] in ("video", "image_voiceover", "slideshow")
+    caption = f"{row['business_name']} — {row['service']}"
+
+    try:
+        # 1) Media container olustur
+        create_params = {"caption": caption, "access_token": access_token}
+        if is_video:
+            create_params["media_type"] = "REELS"
+            create_params["video_url"] = media_url
+        else:
+            create_params["image_url"] = media_url
+
+        create_resp = requests.post(
+            f"https://graph.facebook.com/v21.0/{ig_account_id}/media",
+            data=create_params,
+            timeout=60,
+        )
+        create_data = create_resp.json()
+        if "id" not in create_data:
+            raise HTTPException(status_code=502, detail=f"Instagram container hatası: {create_data}")
+        creation_id = create_data["id"]
+
+        # 2) Video ise islenmesini bekle (kisa polling)
+        if is_video:
+            for _ in range(15):
+                status_resp = requests.get(
+                    f"https://graph.facebook.com/v21.0/{creation_id}",
+                    params={"fields": "status_code", "access_token": access_token},
+                    timeout=15,
+                )
+                status_code = status_resp.json().get("status_code")
+                if status_code == "FINISHED":
+                    break
+                if status_code == "ERROR":
+                    raise HTTPException(status_code=502, detail="Instagram video işleme hatası")
+                time.sleep(2)
+
+        # 3) Yayinla
+        publish_resp = requests.post(
+            f"https://graph.facebook.com/v21.0/{ig_account_id}/media_publish",
+            data={"creation_id": creation_id, "access_token": access_token},
+            timeout=30,
+        )
+        publish_data = publish_resp.json()
+        if "id" not in publish_data:
+            raise HTTPException(status_code=502, detail=f"Instagram yayınlama hatası: {publish_data}")
+
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Instagram bağlantı hatası: {e}")
+
+    with get_db() as db:
+        db.execute("UPDATE videos SET ig_posted = 1 WHERE id = ?", (video_row_id,))
+
+    return {"ok": True, "instagram_post_id": publish_data["id"]}
+
+
+
 def health():
     return {"ok": True, "time": time.time()}
