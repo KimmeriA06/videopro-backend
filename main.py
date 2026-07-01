@@ -600,7 +600,11 @@ def get_video_status(video_row_id: int, user=Depends(get_current_user)):
 # ---------- Video silme (DB + HeyGen kuyrugundan) ----------
 def delete_heygen_video(heygen_video_id: str) -> bool:
     """HeyGen tarafindaki videoyu da siler. Basarili olursa True doner."""
-    if not HEYGEN_API_KEY or not heygen_video_id:
+    if not HEYGEN_API_KEY:
+        print(f"[heygen-delete] HEYGEN_API_KEY tanimli degil, atlaniyor (video_id={heygen_video_id})")
+        return False
+    if not heygen_video_id:
+        print("[heygen-delete] heygen_video_id bos, atlaniyor")
         return False
     try:
         resp = requests.delete(
@@ -609,8 +613,10 @@ def delete_heygen_video(heygen_video_id: str) -> bool:
             headers={"X-Api-Key": HEYGEN_API_KEY},
             timeout=15,
         )
+        print(f"[heygen-delete] video_id={heygen_video_id} status={resp.status_code} body={resp.text[:300]}")
         return resp.status_code == 200
-    except requests.RequestException:
+    except requests.RequestException as e:
+        print(f"[heygen-delete] baglanti hatasi: {e}")
         return False
 
 
