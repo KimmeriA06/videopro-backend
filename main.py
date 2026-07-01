@@ -228,12 +228,13 @@ class ChangeCredentialsRequest(BaseModel):
 class GenerateVideoRequest(BaseModel):
     business_name: str
     business_id: int = 0
-    content_type: str = "video"  # video | image_silent | image_voiceover | slideshow
+    content_type: str = "video"  # video | image_voiceover | slideshow (own_upload ayrı /api/videos/upload endpoint'ini kullanır)
     images: list[str] = []  # base64 data URL'leri (kucuk gorseller icin)
     service: str
     target_audience: str = "Genel"
     message: str = "Hemen iletişime geçin"
     tone: str = "samimi"
+    duration: str = "60"  # saniye: 30 | 60 | 90 (frontend'in "Video süresi" alanı)
     notes: str = ""
     avatar_id: str = "Daisy-inskirt-20220818"
     voice_id: str = ""
@@ -455,9 +456,19 @@ def generate_video(body: GenerateVideoRequest, user=Depends(get_current_user)):
     payload = body.dict()
     payload["images_count"] = len(body.images)  # buyuk base64 datayi loglarda gormemek icin ozet
     try:
-        resp = requests.post(MAKE_WEBHOOK_URL, json=payload, timeout=30)
+        # Timeout 60sn: slideshow gibi coklu-gorsel iceriklerde base64 payload buyuk olabiliyor.
+        resp = requests.post(MAKE_WEBHOOK_URL, json=payload, timeout=60)
     except requests.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Make.com baglanti hatasi: {e}")
+
+    # Make.com webhook 2xx disi bir sey donduyse bunu sessizce yutup "basarili"
+    # gostermek yerine gercek hatayi frontend'e ilet ve DB'ye sahte "processing"
+    # kaydi eklemeyi engelle.
+    if not resp.ok:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Make.com webhook hatasi (HTTP {resp.status_code}): {resp.text[:300]}",
+        )
 
     heygen_video_id = None
     try:
@@ -474,7 +485,7 @@ def generate_video(body: GenerateVideoRequest, user=Depends(get_current_user)):
         )
         video_row_id = cur.lastrowid
 
-    return {"ok": resp.ok, "make_status": resp.status_code, "video_row_id": video_row_id, "heygen_video_id": heygen_video_id}
+    return {"ok": True, "make_status": resp.status_code, "video_row_id": video_row_id, "heygen_video_id": heygen_video_id}
 
 
 @app.post("/api/videos/upload")
