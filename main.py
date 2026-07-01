@@ -597,6 +597,53 @@ def get_video_status(video_row_id: int, user=Depends(get_current_user)):
     return {"db_status": row["status"], "live": live}
 
 
+# ---------- Video silme (DB + HeyGen kuyrugundan) ----------
+def delete_heygen_video(heygen_video_id: str) -> bool:
+    """HeyGen tarafindaki videoyu da siler. Basarili olursa True doner."""
+    if not HEYGEN_API_KEY or not heygen_video_id:
+        return False
+    try:
+        resp = requests.delete(
+            "https://api.heygen.com/v1/video.delete",
+            params={"video_id": heygen_video_id},
+            headers={"X-Api-Key": HEYGEN_API_KEY},
+            timeout=15,
+        )
+        return resp.status_code == 200
+    except requests.RequestException:
+        return False
+
+
+@app.delete("/api/videos/{video_row_id}")
+def delete_video(video_row_id: int, user=Depends(get_current_user)):
+    with get_db() as db:
+        row = db.execute("SELECT * FROM videos WHERE id = ?", (video_row_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Video bulunamadı")
+    if user["role"] != "admin" and row["user_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Bu videoyu silme yetkin yok")
+
+    # HeyGen tarafinda da varsa, orada da sil (kuyrukta/render'da bekleyen dahil)
+    heygen_deleted = None
+    if row["heygen_video_id"]:
+        heygen_deleted = delete_heygen_video(row["heygen_video_id"])
+
+    # Kendi yuklenmis (own_upload) dosyasi varsa, sunucudaki dosyayi da sil
+    if row["content_type"] == "own_upload" and row["video_url"]:
+        try:
+            filename = row["video_url"].rsplit("/", 1)[-1]
+            filepath = os.path.join(UPLOADS_DIR, filename)
+            if os.path.isfile(filepath):
+                os.remove(filepath)
+        except OSError:
+            pass
+
+    with get_db() as db:
+        db.execute("DELETE FROM videos WHERE id = ?", (video_row_id,))
+
+    return {"ok": True, "heygen_deleted": heygen_deleted}
+
+
 class PublishRequest(BaseModel):
     platforms: list[str] = ["instagram"]  # instagram | facebook | youtube
 
